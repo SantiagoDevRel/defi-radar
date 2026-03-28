@@ -25,14 +25,14 @@ import {
   getPoolById,
   getPoolHistory,
   getDbStats,
-} from '../db/queries.js';
-import { requireApiKey } from './middleware.js';
-import { refreshManager } from '../services/refresh-manager.js';
-import ALL_TOKENS from '../config/whitelist.js';
-import PROTOCOLS from '../config/protocols.js';
-import type { Chain } from '../config/chains.js';
-import { formatYield } from '../utils/format.js';
-import { logger } from '../utils/logger.js';
+} from '../db/queries';
+import { requireApiKey } from './middleware';
+import { refreshManager } from '../services/refresh-manager';
+import ALL_TOKENS from '../config/whitelist';
+import PROTOCOLS from '../config/protocols';
+import type { Chain } from '../config/chains';
+import { formatYield } from '../utils/format';
+import { logger } from '../utils/logger';
 
 const router = Router();
 

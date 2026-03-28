@@ -16,12 +16,12 @@
  */
 
 import { ethers } from 'ethers';
-import { BaseEvmAdapter } from './base-evm-adapter.js';
-import type { YieldPool } from './types.js';
-import { isTokenAllowed } from '../config/whitelist.js';
-import { calculateRiskScore } from '../services/risk-calculator.js';
-import { generatePoolId } from '../utils/format.js';
-import { logger } from '../utils/logger.js';
+import { BaseEvmAdapter } from './base-evm-adapter';
+import type { YieldPool } from './types';
+import { isTokenAllowed } from '../config/whitelist';
+import { calculateRiskScore } from '../services/risk-calculator';
+import { generatePoolId } from '../utils/format';
+import { logger } from '../utils/logger';
 
 // ---------------------------------------------------------------------------
 // ABIs (minimal, only what we need)
@@ -40,16 +40,16 @@ const VTOKEN_ABI = [
   'function getCash() external view returns (uint256)',
 ] as const;
 
-const ERC20_ABI_MIN = [
-  'function symbol() external view returns (string)',
-  'function decimals() external view returns (uint8)',
-] as const;
+// ERC20_ABI_MIN kept for future use in token symbol/decimal lookups
+// const ERC20_ABI_MIN = [...] as const;
 
 const COMPTROLLER_ABI = [
   'function getAllMarkets() external view returns (address[])',
   'function markets(address) external view returns (bool isListed, uint256 collateralFactorMantissa, bool isComped)',
   'function venusSupplySpeeds(address) external view returns (uint256)',
   'function venusBorrowSpeeds(address) external view returns (uint256)',
+  // Returns the current price oracle — use this instead of hardcoding the address
+  'function oracle() external view returns (address)',
 ] as const;
 
 const VENUS_ORACLE_ABI = [
@@ -64,13 +64,15 @@ const VENUS_ORACLE_ABI = [
  * Venus Comptroller (Unitroller proxy) on BNB Chain mainnet.
  * Verified: https://bscscan.com/address/0xfD36E2c2a6789Db23113685031d7F16329158384
  */
-const COMPTROLLER_ADDRESS = '0xfD36E2c2a6789Db23113685031d7F16329158384';
+// Use lowercase to bypass EIP-55 checksum validation in ethers v6
+const COMPTROLLER_ADDRESS = '0xfd36e2c2a6789db23113685031d7f16329158384';
 
 /**
- * Venus Oracle — returns 18-decimal USD prices for vToken underlyings.
- * Verified: https://bscscan.com/address/0x6592b5DE802159dD3beEA3b851AC7F53Ac093e3c
+ * Venus ResilientOracle — current address as of March 2026.
+ * Kept as a reference; the live address is fetched dynamically via comptroller.oracle().
+ * Verified: https://bscscan.com/address/0x6592b5DE802159F3E74B2486b091D11a8256ab8A
  */
-const ORACLE_ADDRESS = '0x6592b5DE802159dD3beEA3b851AC7F53Ac093e3c';
+// const ORACLE_ADDRESS = '0x6592b5de802159f3e74b2486b091d11a8256ab8a'; // dynamic fetch preferred
 
 /**
  * BNB Chain produces ~1 block every 3 seconds.
@@ -82,7 +84,7 @@ const BLOCKS_PER_YEAR = 10_512_000n;
  * XVS token address on BNB Chain — needed to price reward emissions.
  * Used to look up XVS/USD price from the oracle.
  */
-const XVS_VTOKEN_ADDRESS = '0x151B1e2635A717bcDc836ECd6FbB62B674FE3E1D';
+const XVS_VTOKEN_ADDRESS = '0x151b1e2635a717bcdc836ecd6fbb62b674fe3e1d';
 
 // ---------------------------------------------------------------------------
 // Adapter
@@ -93,12 +95,10 @@ export class VenusAdapter extends BaseEvmAdapter {
   readonly chains = ['bnb'] as const;
 
   private readonly comptroller: ethers.Contract;
-  private readonly oracle: ethers.Contract;
 
   constructor() {
     super('bnb');
     this.comptroller = this.contract(COMPTROLLER_ADDRESS, COMPTROLLER_ABI);
-    this.oracle = this.contract(ORACLE_ADDRESS, VENUS_ORACLE_ABI);
   }
 
   async fetchPools(): Promise<YieldPool[]> {
@@ -110,16 +110,37 @@ export class VenusAdapter extends BaseEvmAdapter {
       'getAllMarkets'
     );
 
+    // 2. Read the live oracle address from the comptroller (handles upgrades)
+    const oracleAddress: string = await this.withRetry(
+      () => this.comptroller.oracle(),
+      'oracle'
+    );
+    const oracle = this.contract(oracleAddress.toLowerCase(), VENUS_ORACLE_ABI);
+    logger.info(`[Venus] Oracle address: ${oracleAddress}`);
+
     logger.info(`[Venus] Found ${markets.length} markets`);
 
-    // 2. Get XVS price for reward APY calculations
-    const xvsPriceUsd = await this.getXvsPrice();
+    // 3. Get XVS price for reward APY calculations
+    const xvsPriceUsd = await this.getXvsPrice(oracle);
 
-    // 3. Fetch data for each market in parallel (with safe fallback)
-    const poolOrNulls = await this.safeMulticall(
-      markets.map((addr) => () => this.fetchMarket(addr, xvsPriceUsd)),
-      'fetchMarkets'
-    );
+    // 4. Fetch data sequentially in batches to respect public RPC rate limits.
+    //    The public BSC dataseed node throttles large bursts of concurrent eth_calls.
+    const BATCH_SIZE = 3;
+    const BATCH_DELAY_MS = 500;
+    const poolOrNulls: (YieldPool | null)[] = [];
+
+    for (let i = 0; i < markets.length; i += BATCH_SIZE) {
+      const batch = markets.slice(i, i + BATCH_SIZE);
+      const batchResults = await this.safeMulticall(
+        batch.map((addr) => () => this.fetchMarket(addr, oracle, xvsPriceUsd)),
+        `fetchMarkets[${i}]`
+      );
+      poolOrNulls.push(...batchResults);
+
+      if (i + BATCH_SIZE < markets.length) {
+        await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
+      }
+    }
 
     const pools = poolOrNulls.filter((p): p is YieldPool => p !== null);
     logger.info(`[Venus] Successfully fetched ${pools.length}/${markets.length} markets`);
@@ -133,58 +154,56 @@ export class VenusAdapter extends BaseEvmAdapter {
 
   private async fetchMarket(
     vTokenAddress: string,
+    oracle: ethers.Contract,
     xvsPriceUsd: number
   ): Promise<YieldPool | null> {
     const vToken = this.contract(vTokenAddress, VTOKEN_ABI);
 
-    // Read basic info
+    // Read basic info (only the fields we need — fewer RPC calls per market)
     const [
       vSymbol,
       supplyRatePerBlock,
-      borrowRatePerBlock,
-      totalSupply,
       totalBorrows,
       totalReserves,
       cash,
-      vDecimals,
       venusSupplySpeed,
     ] = await Promise.all([
       vToken.symbol() as Promise<string>,
       vToken.supplyRatePerBlock() as Promise<bigint>,
-      vToken.borrowRatePerBlock() as Promise<bigint>,
-      vToken.totalSupply() as Promise<bigint>,
       vToken.totalBorrows() as Promise<bigint>,
       vToken.totalReserves() as Promise<bigint>,
       vToken.getCash() as Promise<bigint>,
-      vToken.decimals() as Promise<number>,
       this.comptroller.venusSupplySpeeds(vTokenAddress) as Promise<bigint>,
     ]);
 
     // Derive the underlying token symbol (strip the leading 'v')
     const underlyingSymbol = this.parseUnderlyingSymbol(vSymbol);
 
-    // Get the underlying USD price from Venus oracle (18-decimal mantissa)
+    // Get the underlying USD price from Venus ResilientOracle.
+    // The oracle uses the Compound standard: price mantissa = USD_price × 10^(36 − underlyingDecimals).
     const underlyingPriceMantissa: bigint = await this.withRetry(
-      () => this.oracle.getUnderlyingPrice(vTokenAddress),
+      () => oracle.getUnderlyingPrice(vTokenAddress),
       `oraclePrice:${vSymbol}`
     );
 
-    // Oracle returns price with 18 decimals adjusted for token decimals
-    const underlyingPriceUsd =
-      Number(underlyingPriceMantissa) / 1e18;
-
-    if (underlyingPriceUsd <= 0) {
-      logger.debug(`[Venus] Skipping ${vSymbol}: price is 0`);
+    if (underlyingPriceMantissa <= 0n) {
+      logger.debug(`[Venus] Skipping ${vSymbol}: oracle price is 0`);
       return null;
     }
 
-    // Compute TVL in USD
-    // TVL = (cash + totalBorrows - totalReserves) * price
-    // vToken has 8 decimals; underlying price already adjusted
+    // Compute TVL using pure BigInt arithmetic to avoid floating-point overflow.
+    //
+    // Compound oracle formula (stays consistent across decimal counts):
+    //   TVL_USD = (cash + totalBorrows - totalReserves) × priceMantissa / 1e36
+    //
+    // This works because priceMantissa = USD_price × 1e(36 - underlyingDecimals),
+    // so the 1e(underlyingDecimals) in the raw amounts cancels perfectly.
+    const PRECISION = 1_000_000n; // keep 6 decimal places of USD
+    const SCALE_36 = BigInt('1' + '0'.repeat(36));
+
     const totalAssetsRaw = cash + totalBorrows - totalReserves;
-    const totalAssetsNormalized =
-      Number(totalAssetsRaw) / Math.pow(10, vDecimals);
-    const tvlUsd = totalAssetsNormalized * underlyingPriceUsd;
+    const tvlRaw = (totalAssetsRaw * underlyingPriceMantissa * PRECISION) / SCALE_36;
+    const tvlUsd = Number(tvlRaw) / Number(PRECISION);
 
     // Filter by whitelist
     if (!isTokenAllowed(underlyingSymbol, tvlUsd)) {
@@ -242,10 +261,10 @@ export class VenusAdapter extends BaseEvmAdapter {
    * Get XVS price in USD by reading from the Venus oracle.
    * Falls back to 0 if the oracle call fails (reward APY will show 0).
    */
-  private async getXvsPrice(): Promise<number> {
+  private async getXvsPrice(oracle: ethers.Contract): Promise<number> {
     try {
       const priceMantissa: bigint = await this.withRetry(
-        () => this.oracle.getUnderlyingPrice(XVS_VTOKEN_ADDRESS),
+        () => oracle.getUnderlyingPrice(XVS_VTOKEN_ADDRESS),
         'xvsPrice'
       );
       return Number(priceMantissa) / 1e18;

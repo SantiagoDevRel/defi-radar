@@ -9,10 +9,10 @@
  * - Returns timing and error metadata per adapter.
  */
 
-import type { ProtocolAdapter, YieldPool, AdapterResult } from '../adapters/types.js';
-import { VenusAdapter } from '../adapters/venus.js';
-import type { Chain } from '../config/chains.js';
-import { logger } from '../utils/logger.js';
+import type { ProtocolAdapter, YieldPool, AdapterResult } from '../adapters/types';
+import { VenusAdapter } from '../adapters/venus';
+import type { Chain } from '../config/chains';
+import { logger } from '../utils/logger';
 
 // ---------------------------------------------------------------------------
 // Adapter registry — add new adapters here

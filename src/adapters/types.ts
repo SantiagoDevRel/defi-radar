@@ -5,7 +5,7 @@
  * Every yield opportunity is normalized into a YieldPool before storage/display.
  */
 
-import type { Chain } from '../config/chains.js';
+import type { Chain } from '../config/chains';
 
 // ---------------------------------------------------------------------------
 // Shared types

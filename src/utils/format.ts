@@ -2,9 +2,9 @@
  * Number formatting and ID generation helpers.
  */
 
-import type { YieldPool } from '../adapters/types.js';
-import type { Chain } from '../config/chains.js';
-import { riskLabel } from '../services/risk-calculator.js';
+import type { YieldPool } from '../adapters/types';
+import type { Chain } from '../config/chains';
+import { riskLabel } from '../services/risk-calculator';
 
 // ---------------------------------------------------------------------------
 // Pool ID

@@ -13,10 +13,10 @@
  */
 
 import EventEmitter from 'events';
-import { YieldAggregator, type AggregatorRunResult } from './yield-aggregator.js';
-import { saveSnapshot } from '../db/queries.js';
-import type { Chain } from '../config/chains.js';
-import { logger } from '../utils/logger.js';
+import { YieldAggregator, type AggregatorRunResult } from './yield-aggregator';
+import { saveSnapshot } from '../db/queries';
+import type { Chain } from '../config/chains';
+import { logger } from '../utils/logger';
 
 // ---------------------------------------------------------------------------
 // Types

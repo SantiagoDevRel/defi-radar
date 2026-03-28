@@ -9,9 +9,9 @@
  */
 
 import { ethers } from 'ethers';
-import CHAINS, { type Chain, type EvmChainConfig } from '../config/chains.js';
-import type { ProtocolAdapter, YieldPool } from './types.js';
-import { logger } from '../utils/logger.js';
+import CHAINS, { type Chain, type EvmChainConfig } from '../config/chains';
+import type { ProtocolAdapter, YieldPool } from './types';
+import { logger } from '../utils/logger';
 
 // ---------------------------------------------------------------------------
 // Provider cache — one provider per chain URL to avoid socket exhaustion

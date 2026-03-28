@@ -4,7 +4,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
-import { logger } from '../utils/logger.js';
+import { logger } from '../utils/logger';
 
 // ---------------------------------------------------------------------------
 // CORS

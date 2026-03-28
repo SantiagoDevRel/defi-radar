@@ -9,10 +9,10 @@
  */
 
 import { ethers } from 'ethers';
-import { getProvider } from '../adapters/base-evm-adapter.js';
-import type { Chain } from '../config/chains.js';
-import { logger } from '../utils/logger.js';
-import { withRetry } from '../adapters/base-evm-adapter.js';
+import { getProvider } from '../adapters/base-evm-adapter';
+import type { Chain } from '../config/chains';
+import { logger } from '../utils/logger';
+import { withRetry } from '../adapters/base-evm-adapter';
 
 // ---------------------------------------------------------------------------
 // Chainlink AggregatorV3 interface

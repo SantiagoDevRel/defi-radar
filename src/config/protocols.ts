@@ -5,7 +5,7 @@
  * UI protocol filter. Adapters self-register by referencing their protocol ID.
  */
 
-import type { Chain } from './chains.js';
+import type { Chain } from './chains';
 
 export type AuditStatus = 'top-firm' | 'known-firm' | 'no-audit';
 

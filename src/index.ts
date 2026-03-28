@@ -11,11 +11,11 @@
 
 import 'dotenv/config';
 import express from 'express';
-import { corsMiddleware, requestLogger, errorHandler, notFound } from './api/middleware.js';
-import routes from './api/routes.js';
-import { getDb, closeDb } from './db/database.js';
-import { refreshManager } from './services/refresh-manager.js';
-import { logger } from './utils/logger.js';
+import { corsMiddleware, requestLogger, errorHandler, notFound } from './api/middleware';
+import routes from './api/routes';
+import { initDatabase, closeDb } from './db/database';
+import { refreshManager } from './services/refresh-manager';
+import { logger } from './utils/logger';
 
 // ---------------------------------------------------------------------------
 // App setup
@@ -49,9 +49,9 @@ app.use(errorHandler);
 async function start(): Promise<void> {
   const port = parseInt(process.env['PORT'] ?? '3001', 10);
 
-  // Initialize DB (creates schema if not exists)
+  // Initialize DB (async WASM load + schema migration)
   try {
-    getDb();
+    await initDatabase();
     logger.info('[Startup] Database initialized');
   } catch (err) {
     logger.error('[Startup] Failed to initialize database', {

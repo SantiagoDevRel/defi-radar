@@ -11,7 +11,14 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts"
   },
-  "keywords": ["defi", "yield", "blockchain", "ethereum", "solana", "stellar"],
+  "keywords": [
+    "defi",
+    "yield",
+    "blockchain",
+    "ethereum",
+    "solana",
+    "stellar"
+  ],
   "author": "santiagotrujilloz",
   "license": "MIT",
   "engines": {
@@ -20,17 +27,20 @@
   "dependencies": {
     "@solana/web3.js": "^1.95.4",
     "@stellar/stellar-sdk": "^12.3.0",
-    "better-sqlite3": "^9.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "ethers": "^6.13.4",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "sql.js": "^1.14.1"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.5",
+    "@types/sql.js": "^1.4.11",
+    "@typescript-eslint/eslint-plugin": "^8.57.2",
+    "@typescript-eslint/parser": "^8.57.2",
+    "eslint": "^10.1.0",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.7.3"

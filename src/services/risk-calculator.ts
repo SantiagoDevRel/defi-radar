@@ -17,8 +17,8 @@
  *   7–10 = High risk (red)
  */
 
-import { getProtocolMeta } from '../config/protocols.js';
-import type { YieldType } from '../adapters/types.js';
+import { getProtocolMeta } from '../config/protocols';
+import type { YieldType } from '../adapters/types';
 
 // ---------------------------------------------------------------------------
 // Input to the risk calculator

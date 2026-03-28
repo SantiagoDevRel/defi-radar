@@ -1,57 +1,101 @@
 /**
- * SQLite database setup via better-sqlite3.
+ * SQLite database setup via sql.js (pure WebAssembly — no native compilation).
+ *
+ * sql.js is synchronous after initialization, so the query layer stays sync.
+ * We persist the database to disk manually after every write transaction
+ * using fs.writeFileSync on the WASM memory buffer.
  *
  * Schema:
  *   pools         — latest snapshot of each yield pool (upserted on refresh)
  *   pool_history  — hourly historical records, retained for 90 days
- *
- * WAL mode is enabled for better read concurrency (multiple API reads during refresh).
+ *   refresh_log   — diagnostic log for every refresh run
  */
 
-import Database from 'better-sqlite3';
+import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js';
 import path from 'path';
 import fs from 'fs';
-import { logger } from '../utils/logger.js';
+import { logger } from '../utils/logger';
 
 // ---------------------------------------------------------------------------
-// Database singleton
+// Module-level state (initialized once at startup via initDatabase())
 // ---------------------------------------------------------------------------
 
-let _db: Database.Database | null = null;
+let _db: Database | null = null;
+let _dbPath: string = '';
+let _SQL: SqlJsStatic | null = null;
 
-export function getDb(): Database.Database {
-  if (_db) return _db;
+// ---------------------------------------------------------------------------
+// Initialization (must be called once before any query)
+// ---------------------------------------------------------------------------
 
-  const dbPath = path.resolve(
-    process.env['DB_PATH'] ?? './data/defi-radar.db'
-  );
+/**
+ * Initialize the sql.js WASM engine and open (or create) the database file.
+ * Call this from src/index.ts before starting the Express server.
+ */
+export async function initDatabase(): Promise<void> {
+  _dbPath = path.resolve(process.env['DB_PATH'] ?? './data/defi-radar.db');
 
   // Ensure parent directory exists
-  const dir = path.dirname(dbPath);
+  const dir = path.dirname(_dbPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  _db = new Database(dbPath);
+  // Load the WASM binary — sql.js bundles it inside the npm package
+  _SQL = await initSqlJs();
 
-  // Performance settings
-  _db.pragma('journal_mode = WAL');
-  _db.pragma('synchronous = NORMAL');
-  _db.pragma('cache_size = -32000'); // 32 MB
-  _db.pragma('temp_store = MEMORY');
-  _db.pragma('mmap_size = 268435456'); // 256 MB
+  // Load existing DB from disk, or create a fresh one
+  if (fs.existsSync(_dbPath)) {
+    const fileBuffer = fs.readFileSync(_dbPath);
+    _db = new _SQL.Database(fileBuffer);
+    logger.info(`[DB] Loaded existing database from ${_dbPath}`);
+  } else {
+    _db = new _SQL.Database();
+    logger.info(`[DB] Created new database at ${_dbPath}`);
+  }
 
-  runMigrations(_db);
+  runMigrations();
+  logger.info('[DB] Migrations complete');
+}
 
-  logger.info(`[DB] Opened database at ${dbPath}`);
+/**
+ * Get the initialized database instance.
+ * Throws if initDatabase() has not been called.
+ */
+export function getDb(): Database {
+  if (!_db) {
+    throw new Error('[DB] Database not initialized — call initDatabase() first');
+  }
   return _db;
+}
+
+/**
+ * Persist the in-memory WASM database to disk.
+ * Called automatically after every write operation in queries.ts.
+ */
+export function persistDb(): void {
+  if (!_db || !_dbPath) return;
+  const data = _db.export();
+  fs.writeFileSync(_dbPath, Buffer.from(data));
+}
+
+/** Gracefully close the database */
+export function closeDb(): void {
+  if (_db) {
+    persistDb();
+    _db.close();
+    _db = null;
+    logger.info('[DB] Database closed and persisted');
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Schema migrations
 // ---------------------------------------------------------------------------
 
-function runMigrations(db: Database.Database): void {
+function runMigrations(): void {
+  const db = getDb();
+
   db.exec(`
     -- -------------------------------------------------------------------------
     -- pools: latest state of each yield pool
@@ -62,47 +106,41 @@ function runMigrations(db: Database.Database): void {
       protocol_display TEXT    NOT NULL,
       chain            TEXT    NOT NULL,
       type             TEXT    NOT NULL,
-      tokens           TEXT    NOT NULL,  -- JSON array
+      tokens           TEXT    NOT NULL,
       apy_base         REAL    NOT NULL,
       apy_reward       REAL    NOT NULL,
       apy_total        REAL    NOT NULL,
       tvl_usd          REAL    NOT NULL,
       risk_score       INTEGER NOT NULL,
-      il_7d            REAL,              -- nullable
+      il_7d            REAL,
       url              TEXT    NOT NULL,
       contract_address TEXT    NOT NULL,
-      last_updated     TEXT    NOT NULL   -- ISO 8601
+      last_updated     TEXT    NOT NULL
     );
 
-    -- Indexes for common query patterns
     CREATE INDEX IF NOT EXISTS idx_pools_chain    ON pools(chain);
     CREATE INDEX IF NOT EXISTS idx_pools_protocol ON pools(protocol);
-    CREATE INDEX IF NOT EXISTS idx_pools_apy      ON pools(apy_total DESC);
+    CREATE INDEX IF NOT EXISTS idx_pools_apy      ON pools(apy_total);
 
     -- -------------------------------------------------------------------------
-    -- pool_history: hourly snapshots for 90-day trend data
+    -- pool_history: hourly snapshots for trend data
     -- -------------------------------------------------------------------------
     CREATE TABLE IF NOT EXISTS pool_history (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       pool_id       TEXT    NOT NULL,
-      snapshot_time TEXT    NOT NULL,  -- ISO 8601
+      snapshot_time TEXT    NOT NULL,
       apy_base      REAL    NOT NULL,
       apy_reward    REAL    NOT NULL,
       apy_total     REAL    NOT NULL,
       tvl_usd       REAL    NOT NULL,
-      risk_score    INTEGER NOT NULL,
-
-      FOREIGN KEY (pool_id) REFERENCES pools(id) ON DELETE CASCADE
+      risk_score    INTEGER NOT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_history_pool_time
-      ON pool_history(pool_id, snapshot_time DESC);
-
-    CREATE INDEX IF NOT EXISTS idx_history_time
-      ON pool_history(snapshot_time DESC);
+      ON pool_history(pool_id, snapshot_time);
 
     -- -------------------------------------------------------------------------
-    -- refresh_log: track every refresh run for diagnostics
+    -- refresh_log
     -- -------------------------------------------------------------------------
     CREATE TABLE IF NOT EXISTS refresh_log (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,44 +152,20 @@ function runMigrations(db: Database.Database): void {
       error        TEXT
     );
   `);
-
-  logger.info('[DB] Migrations complete');
 }
 
 // ---------------------------------------------------------------------------
-// Retention cleanup (call once per refresh cycle)
+// Retention cleanup
 // ---------------------------------------------------------------------------
 
-/**
- * Delete pool_history rows older than the configured retention period.
- * Runs inside a transaction for efficiency.
- */
 export function runRetentionCleanup(): void {
   const db = getDb();
-  const retentionDays = parseInt(
-    process.env['DB_RETENTION_DAYS'] ?? '90',
-    10
-  );
+  const retentionDays = parseInt(process.env['DB_RETENTION_DAYS'] ?? '90', 10);
 
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - retentionDays);
   const cutoffIso = cutoff.toISOString();
 
-  const stmt = db.prepare(
-    'DELETE FROM pool_history WHERE snapshot_time < ?'
-  );
-  const info = stmt.run(cutoffIso);
-
-  if (info.changes > 0) {
-    logger.info(`[DB] Retention cleanup: removed ${info.changes} old history rows`);
-  }
-}
-
-/** Gracefully close the database (call on process exit) */
-export function closeDb(): void {
-  if (_db) {
-    _db.close();
-    _db = null;
-    logger.info('[DB] Database closed');
-  }
+  db.run('DELETE FROM pool_history WHERE snapshot_time < ?', [cutoffIso]);
+  logger.debug(`[DB] Retention cleanup: removed history older than ${cutoffIso}`);
 }

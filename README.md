@@ -23,7 +23,7 @@ Most yield aggregators call DeFiLlama or a proprietary indexer. DeFi Radar goes 
 |-------------|-------------------------------------|
 | Runtime     | Node.js 18+ / TypeScript 5          |
 | HTTP server | Express 4                           |
-| Database    | SQLite via `better-sqlite3`         |
+| Database    | SQLite via `sql.js` (pure WASM)         |
 | EVM reads   | ethers.js v6                        |
 | Solana      | `@solana/web3.js`                   |
 | Stellar     | `@stellar/stellar-sdk`              |
@@ -110,7 +110,7 @@ Score 1–3 = safe, 4–6 = moderate, 7–10 = high risk.
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/santiagotrujilloz/defi-radar.git
+git clone https://github.com/SantiagoDevRel/defi-radar.git
 cd defi-radar
 npm install
 ```
@@ -132,7 +132,7 @@ npm run dev
 npm run build && npm start
 ```
 
-The server starts at `http://localhost:3001`.
+The server starts at `http://localhost:3000`.
 
 ---
 
@@ -211,7 +211,7 @@ Protocol registry with metadata (audit status, age, chains).
 Trigger a manual refresh. Returns `202 Accepted` immediately; refresh runs in background.
 
 ```bash
-curl -X POST http://localhost:3001/api/refresh \
+curl -X POST http://localhost:3000/api/refresh \
   -H "X-Api-Key: your_secret" \
   -H "Content-Type: application/json" \
   -d '{"chains": ["bnb"]}'   # optional: filter by chain or protocol
