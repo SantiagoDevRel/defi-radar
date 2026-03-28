@@ -116,11 +116,25 @@ export class YieldAggregator {
     };
   }
 
+  /** Per-adapter timeout in milliseconds (90 seconds). Adapters exceeding this are skipped. */
+  private static readonly ADAPTER_TIMEOUT_MS = 90_000;
+
   private async runAdapter(adapter: ProtocolAdapter): Promise<AdapterResult> {
     const start = Date.now();
     try {
       logger.info(`[Aggregator] Running adapter: ${adapter.name}`);
-      const pools = await adapter.fetchPools();
+
+      // Wrap with a timeout to prevent any single adapter from blocking the whole refresh
+      const pools = await Promise.race([
+        adapter.fetchPools(),
+        new Promise<YieldPool[]>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`Adapter timeout after ${YieldAggregator.ADAPTER_TIMEOUT_MS / 1000}s`)),
+            YieldAggregator.ADAPTER_TIMEOUT_MS
+          )
+        ),
+      ]);
+
       const durationMs = Date.now() - start;
       logger.info(
         `[Aggregator] ${adapter.name}: ${pools.length} pools in ${durationMs}ms`

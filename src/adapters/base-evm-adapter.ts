@@ -33,6 +33,10 @@ export function getProvider(chain: Chain): ethers.JsonRpcProvider {
 
   const provider = new ethers.JsonRpcProvider(rpcUrl, chainId, {
     staticNetwork: ethers.Network.from(chainId),
+    polling: false,
+    // Disable JSON-RPC batching — public nodes (BSC dataseed, Alchemy demo) rate-limit
+    // aggressively when multiple eth_calls arrive in a single batch request.
+    batchMaxCount: 1,
   });
 
   providerCache.set(cacheKey, provider);
@@ -54,8 +58,8 @@ export interface RetryOptions {
 
 const DEFAULT_RETRY: Required<RetryOptions> = {
   maxAttempts: 3,
-  baseDelayMs: 500,
-  maxDelayMs: 10_000,
+  baseDelayMs: 1000,
+  maxDelayMs: 15_000,
   retryOnRevert: false,
 };
 

@@ -126,8 +126,18 @@ export class CompoundV3Adapter implements ProtocolAdapter {
   async fetchPools(): Promise<YieldPool[]> {
     logger.info('[Compound V3] Starting multi-chain fetch');
 
+    // Per-market timeout: 45s. Prevents one slow chain from blocking the whole adapter.
+    const MARKET_TIMEOUT_MS = 45_000;
+
     const results = await Promise.allSettled(
-      COMET_MARKETS.map((m) => this.fetchMarket(m))
+      COMET_MARKETS.map((m) =>
+        Promise.race([
+          this.fetchMarket(m),
+          new Promise<YieldPool | null>((_, reject) =>
+            setTimeout(() => reject(new Error(`Market ${m.chain}/${m.label} timed out`)), MARKET_TIMEOUT_MS)
+          ),
+        ])
+      )
     );
 
     const pools: YieldPool[] = [];

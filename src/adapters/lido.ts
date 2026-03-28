@@ -72,26 +72,21 @@ export class LidoAdapter implements ProtocolAdapter {
 
   async fetchPools(): Promise<YieldPool[]> {
     logger.info('[Lido] Starting fetch');
+    return Promise.race([
+      this.doFetchPools(),
+      new Promise<YieldPool[]>((resolve) =>
+        // After 70s, return pool with fallback values rather than timing out completely.
+        // This ensures Lido always appears in the dashboard even when Ethereum RPC is slow.
+        setTimeout(() => {
+          logger.warn('[Lido] Fetch timed out after 70s — returning pool with fallback APY');
+          const pool = this.buildFallbackPool();
+          resolve([pool]);
+        }, 70_000)
+      ),
+    ]);
+  }
 
-    const provider = getProvider('ethereum');
-
-    // Get ETH price from Chainlink
-    const ethPriceUsd = await this.getEthPrice(provider);
-    logger.info(`[Lido] ETH price: $${ethPriceUsd.toFixed(2)}`);
-
-    // Get stETH total supply for TVL
-    const steth = new ethers.Contract(STETH_ADDRESS, STETH_ABI, provider);
-    const totalSupply: bigint = await withRetry(
-      () => steth.totalSupply(),
-      {},
-      'lido/totalSupply'
-    );
-    const tvlUsd = (Number(totalSupply) / 1e18) * ethPriceUsd;
-
-    // Get recent TokenRebased events to calculate APY
-    const apyBase = await this.calculateApyFromRebases(steth, provider);
-    logger.info(`[Lido] stETH APY: ${apyBase.toFixed(4)}%  TVL: $${(tvlUsd / 1e9).toFixed(2)}B`);
-
+  private buildFallbackPool(tvlUsd = 18_000_000_000, apyBase = 4.0): YieldPool {
     const riskScore = calculateRiskScore({
       protocolId: 'lido-finance',
       tvlUsd,
@@ -99,8 +94,7 @@ export class LidoAdapter implements ProtocolAdapter {
       apyReward: 0,
       yieldType: 'staking',
     });
-
-    const pool: YieldPool = {
+    return {
       id: generatePoolId('lido-finance', 'ethereum', STETH_ADDRESS),
       protocol: 'lido-finance',
       protocolDisplay: 'Lido',
@@ -112,13 +106,48 @@ export class LidoAdapter implements ProtocolAdapter {
       apyTotal: apyBase,
       tvlUsd,
       riskScore,
-      il7d: null, // single asset, no IL
+      il7d: null,
       url: 'https://stake.lido.fi',
       contractAddress: STETH_ADDRESS,
       lastUpdated: new Date(),
     };
+  }
 
-    return [pool];
+  private async doFetchPools(): Promise<YieldPool[]> {
+    const provider = getProvider('ethereum');
+
+    let ethPriceUsd = 0;
+    let totalSupply = 0n;
+    try {
+      [ethPriceUsd, totalSupply] = await Promise.race([
+        Promise.all([
+          this.getEthPrice(provider),
+          (async () => {
+            const steth = new ethers.Contract(STETH_ADDRESS, STETH_ABI, provider);
+            return withRetry(() => steth.totalSupply(), { maxAttempts: 2 }, 'lido/totalSupply') as Promise<bigint>;
+          })(),
+        ]),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Lido Ethereum RPC timeout after 35s')), 35_000)
+        ),
+      ]);
+    } catch (err) {
+      logger.warn(`[Lido] Ethereum RPC failed: ${err instanceof Error ? err.message : String(err)} — using fallback`);
+    }
+
+    logger.info(`[Lido] ETH price: $${ethPriceUsd.toFixed(2)}`);
+
+    // TVL from on-chain supply * price, or well-known fallback ($18B+)
+    const tvlUsd = totalSupply > 0n
+      ? (Number(totalSupply) / 1e18) * ethPriceUsd
+      : 18_000_000_000;
+
+    // Get recent TokenRebased events (capped at 20s)
+    const steth2 = new ethers.Contract(STETH_ADDRESS, STETH_ABI, provider);
+    const apyBase = await this.calculateApyFromRebases(steth2, provider);
+    logger.info(`[Lido] stETH APY: ${apyBase.toFixed(4)}%  TVL: $${(tvlUsd / 1e9).toFixed(2)}B`);
+
+    return [this.buildFallbackPool(tvlUsd, apyBase)];
   }
 
   // ---------------------------------------------------------------------------
@@ -131,64 +160,58 @@ export class LidoAdapter implements ProtocolAdapter {
   ): Promise<number> {
     try {
       const currentBlock = await provider.getBlockNumber();
-      // Scan last 14 days of events to ensure we get at least one rebase
+      // Scan last 14 days — Lido rebases daily so 14 days = ~14 events.
+      // Some events may be negative (slashing); we average over positive ones only.
       const fromBlock = currentBlock - BLOCKS_PER_DAY_ETH * 14;
 
-      logger.debug(`[Lido] Querying TokenRebased events from block ${fromBlock}`);
+      logger.debug(`[Lido] Querying TokenRebased events blocks ${fromBlock}–${currentBlock}`);
 
       const filter = steth.filters.TokenRebased();
-      const events = await withRetry(
-        () => steth.queryFilter(filter, fromBlock, currentBlock),
-        { maxAttempts: 3 },
-        'lido/TokenRebased'
-      );
+
+      // Limit to 20 seconds for the event query — public nodes can be slow
+      const events = await Promise.race([
+        withRetry(
+          () => steth.queryFilter(filter, fromBlock, currentBlock),
+          { maxAttempts: 2 },
+          'lido/TokenRebased'
+        ),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('getLogs timeout')), 20_000)
+        ),
+      ]);
 
       if (!events || events.length === 0) {
         logger.warn('[Lido] No TokenRebased events found — using fallback APR');
         return 4.0; // reasonable Ethereum staking fallback
       }
 
-      // Use the most recent rebase event for the most current APR
-      const latest = events[events.length - 1] as ethers.EventLog;
-      // ethers v6 Result is not directly castable — access named fields via unknown
-      const latestArgs = latest.args as unknown as {
-        timeElapsed: bigint;
-        preTotalEther: bigint;
-        postTotalEther: bigint;
-      };
-      const { timeElapsed, preTotalEther, postTotalEther } = latestArgs;
+      // Compute APR from each rebase event (skip slashing events where post < pre)
+      const aprs: number[] = [];
+      for (const e of events) {
+        const ev = e as ethers.EventLog;
+        const args = ev.args as unknown as {
+          timeElapsed: bigint;
+          preTotalEther: bigint;
+          postTotalEther: bigint;
+        };
+        if (!args || args.preTotalEther === 0n || args.timeElapsed === 0n) continue;
+        const reward = args.postTotalEther - args.preTotalEther;
+        if (reward <= 0n) continue; // skip slashing / negative rebase events
+        const apr =
+          (Number(reward) / Number(args.preTotalEther)) *
+          (SECONDS_PER_YEAR / Number(args.timeElapsed)) *
+          100;
+        if (apr > 0 && apr < 20) aprs.push(apr); // sanity bounds: 0–20% APR for ETH staking
+      }
 
-      if (preTotalEther === 0n || timeElapsed === 0n) {
-        logger.warn('[Lido] Invalid rebase event data');
+      if (aprs.length === 0) {
+        logger.warn('[Lido] No valid positive rebase events — using fallback APR');
         return 4.0;
       }
 
-      // APR = (postTotal - preTotal) / preTotal * (SECONDS_PER_YEAR / timeElapsed)
-      const rewardEther = postTotalEther - preTotalEther;
-      const apr =
-        (Number(rewardEther) / Number(preTotalEther)) *
-        (SECONDS_PER_YEAR / Number(timeElapsed)) *
-        100;
-
-      // Average over last N events for a smoother estimate
-      if (events.length >= 3) {
-        const recent = events.slice(-7); // up to last 7 rebase events
-        const aprs = recent.map((e) => {
-          const ev = e as ethers.EventLog;
-          const args = ev.args as unknown as { timeElapsed: bigint; preTotalEther: bigint; postTotalEther: bigint };
-          if (args.preTotalEther === 0n || args.timeElapsed === 0n) return 0;
-          const reward = args.postTotalEther - args.preTotalEther;
-          return (Number(reward) / Number(args.preTotalEther)) * (SECONDS_PER_YEAR / Number(args.timeElapsed)) * 100;
-        }).filter((x) => x > 0);
-
-        if (aprs.length > 0) {
-          const avg = aprs.reduce((a, b) => a + b, 0) / aprs.length;
-          logger.info(`[Lido] APR from ${aprs.length} events: latest=${apr.toFixed(4)}% avg=${avg.toFixed(4)}%`);
-          return avg;
-        }
-      }
-
-      return Math.max(0, apr);
+      const avg = aprs.reduce((a, b) => a + b, 0) / aprs.length;
+      logger.info(`[Lido] APR from ${aprs.length} events: avg=${avg.toFixed(4)}%`);
+      return avg;
     } catch (err) {
       logger.warn('[Lido] Could not calculate APR from rebase events, using fallback', {
         error: err instanceof Error ? err.message : String(err),

@@ -121,8 +121,19 @@ export class AaveV3Adapter implements ProtocolAdapter {
   async fetchPools(): Promise<YieldPool[]> {
     logger.info('[Aave V3] Starting multi-chain fetch');
 
+    // Per-chain timeout: 45s. Prevents one slow chain (e.g. Ethereum with demo RPC)
+    // from blocking data from faster chains (Arbitrum, Avalanche, etc.)
+    const CHAIN_TIMEOUT_MS = 45_000;
+
     const chainResults = await Promise.allSettled(
-      AAVE_CHAIN_CONFIGS.map((cfg) => this.fetchChain(cfg))
+      AAVE_CHAIN_CONFIGS.map((cfg) =>
+        Promise.race([
+          this.fetchChain(cfg),
+          new Promise<YieldPool[]>((_, reject) =>
+            setTimeout(() => reject(new Error(`Chain ${cfg.chain} timed out after ${CHAIN_TIMEOUT_MS}ms`)), CHAIN_TIMEOUT_MS)
+          ),
+        ])
+      )
     );
 
     const pools: YieldPool[] = [];
@@ -130,7 +141,7 @@ export class AaveV3Adapter implements ProtocolAdapter {
       if (result.status === 'fulfilled') {
         pools.push(...result.value);
       } else {
-        logger.error('[Aave V3] Chain fetch failed', {
+        logger.warn('[Aave V3] Chain fetch failed or timed out', {
           error: result.reason instanceof Error ? result.reason.message : String(result.reason),
         });
       }
@@ -156,8 +167,8 @@ export class AaveV3Adapter implements ProtocolAdapter {
 
     logger.info(`[Aave V3][${cfg.chain}] Found ${assets.length} reserves`);
 
-    // Batch-fetch data in groups of 5
-    const BATCH = 5;
+    // Batch-fetch data in groups of 3 (Ethereum RPC is slower)
+    const BATCH = 3;
     const pools: YieldPool[] = [];
 
     for (let i = 0; i < assets.length; i += BATCH) {
@@ -173,7 +184,7 @@ export class AaveV3Adapter implements ProtocolAdapter {
       pools.push(...batchResults.filter((p): p is YieldPool => p !== null));
 
       if (i + BATCH < assets.length) {
-        await new Promise((r) => setTimeout(r, 200));
+        await new Promise((r) => setTimeout(r, 300));
       }
     }
 

@@ -141,8 +141,18 @@ export class CurveAdapter implements ProtocolAdapter {
   async fetchPools(): Promise<YieldPool[]> {
     logger.info('[Curve] Starting multi-chain fetch');
 
+    // Per-pool timeout: 40s. Prevents Ethereum historical queries from blocking other chains.
+    const POOL_TIMEOUT_MS = 40_000;
+
     const results = await Promise.allSettled(
-      CURVE_POOLS.map((p) => this.fetchPool(p))
+      CURVE_POOLS.map((p) =>
+        Promise.race([
+          this.fetchPool(p),
+          new Promise<YieldPool | null>((_, reject) =>
+            setTimeout(() => reject(new Error(`Pool ${p.chain}/${p.label} timed out`)), POOL_TIMEOUT_MS)
+          ),
+        ])
+      )
     );
 
     const pools: YieldPool[] = [];
