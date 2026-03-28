@@ -11,24 +11,26 @@
 
 import type { ProtocolAdapter, YieldPool, AdapterResult } from '../adapters/types';
 import { VenusAdapter } from '../adapters/venus';
+import { PancakeSwapAdapter } from '../adapters/pancakeswap';
+import { AaveV3Adapter } from '../adapters/aave-v3';
+import { CompoundV3Adapter } from '../adapters/compound-v3';
+import { LidoAdapter } from '../adapters/lido';
+import { CurveAdapter } from '../adapters/curve';
 import type { Chain } from '../config/chains';
 import { logger } from '../utils/logger';
 
 // ---------------------------------------------------------------------------
-// Adapter registry — add new adapters here
+// Adapter registry — all active adapters
 // ---------------------------------------------------------------------------
 
 function buildAdapterRegistry(): ProtocolAdapter[] {
   return [
     new VenusAdapter(),
-    // Future adapters:
-    // new AaveAdapter('ethereum'),
-    // new AaveAdapter('polygon'),
-    // new CompoundAdapter('ethereum'),
-    // new PancakeSwapAdapter(),
-    // new OrcaAdapter(),
-    // new MarinadeAdapter(),
-    // new BlendAdapter(),
+    new PancakeSwapAdapter(),
+    new AaveV3Adapter(),
+    new CompoundV3Adapter(),
+    new LidoAdapter(),
+    new CurveAdapter(),
   ];
 }
 
