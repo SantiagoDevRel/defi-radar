@@ -32,16 +32,26 @@ export const TIER_MIN_TVL: Record<TokenTier, number> = {
 // Tier 1 — Blue Chips
 // ---------------------------------------------------------------------------
 const TIER_1_TOKENS: TokenEntry[] = [
-  { symbol: 'BTC',   tier: 1, coingeckoId: 'bitcoin' },
-  { symbol: 'ETH',   tier: 1, coingeckoId: 'ethereum' },
-  { symbol: 'BNB',   tier: 1, coingeckoId: 'binancecoin' },
-  { symbol: 'SOL',   tier: 1, coingeckoId: 'solana' },
-  { symbol: 'ADA',   tier: 1, coingeckoId: 'cardano' },
-  { symbol: 'XLM',   tier: 1, coingeckoId: 'stellar' },
-  { symbol: 'AVAX',  tier: 1, coingeckoId: 'avalanche-2' },
-  { symbol: 'LINK',  tier: 1, coingeckoId: 'chainlink' },
-  { symbol: 'DOT',   tier: 1, coingeckoId: 'polkadot' },
-  { symbol: 'MATIC', tier: 1, coingeckoId: 'matic-network' },
+  { symbol: 'BTC',    tier: 1, coingeckoId: 'bitcoin' },
+  { symbol: 'ETH',    tier: 1, coingeckoId: 'ethereum' },
+  { symbol: 'BNB',    tier: 1, coingeckoId: 'binancecoin' },
+  { symbol: 'SOL',    tier: 1, coingeckoId: 'solana' },
+  { symbol: 'ADA',    tier: 1, coingeckoId: 'cardano' },
+  { symbol: 'XLM',    tier: 1, coingeckoId: 'stellar' },
+  { symbol: 'AVAX',   tier: 1, coingeckoId: 'avalanche-2' },
+  { symbol: 'LINK',   tier: 1, coingeckoId: 'chainlink' },
+  { symbol: 'DOT',    tier: 1, coingeckoId: 'polkadot' },
+  { symbol: 'MATIC',  tier: 1, coingeckoId: 'matic-network' },
+  // Wrapped / bridged variants — treated as their underlying for whitelist purposes
+  { symbol: 'WETH',   tier: 1, coingeckoId: 'ethereum' },
+  { symbol: 'WBTC',   tier: 1, coingeckoId: 'wrapped-bitcoin' },
+  { symbol: 'BTCB',   tier: 1, coingeckoId: 'bitcoin' },        // Binance-peg BTC on BSC
+  { symbol: 'WBNB',   tier: 1, coingeckoId: 'binancecoin' },
+  { symbol: 'WMATIC', tier: 1, coingeckoId: 'matic-network' },
+  { symbol: 'WAVAX',  tier: 1, coingeckoId: 'avalanche-2' },
+  { symbol: 'STETH',  tier: 1, coingeckoId: 'staked-ether' },   // Lido staked ETH
+  { symbol: 'WSTETH', tier: 1, coingeckoId: 'wrapped-steth' },
+  { symbol: 'CBETH',  tier: 1, coingeckoId: 'coinbase-wrapped-staked-eth' },
 ];
 
 // ---------------------------------------------------------------------------

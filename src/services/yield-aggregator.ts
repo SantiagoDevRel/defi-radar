@@ -11,24 +11,26 @@
 
 import type { ProtocolAdapter, YieldPool, AdapterResult } from '../adapters/types';
 import { VenusAdapter } from '../adapters/venus';
+import { PancakeSwapAdapter } from '../adapters/pancakeswap';
+import { AaveV3Adapter } from '../adapters/aave-v3';
+import { CompoundV3Adapter } from '../adapters/compound-v3';
+import { LidoAdapter } from '../adapters/lido';
+import { CurveAdapter } from '../adapters/curve';
 import type { Chain } from '../config/chains';
 import { logger } from '../utils/logger';
 
 // ---------------------------------------------------------------------------
-// Adapter registry — add new adapters here
+// Adapter registry — all active adapters
 // ---------------------------------------------------------------------------
 
 function buildAdapterRegistry(): ProtocolAdapter[] {
   return [
     new VenusAdapter(),
-    // Future adapters:
-    // new AaveAdapter('ethereum'),
-    // new AaveAdapter('polygon'),
-    // new CompoundAdapter('ethereum'),
-    // new PancakeSwapAdapter(),
-    // new OrcaAdapter(),
-    // new MarinadeAdapter(),
-    // new BlendAdapter(),
+    new PancakeSwapAdapter(),
+    new AaveV3Adapter(),
+    new CompoundV3Adapter(),
+    new LidoAdapter(),
+    new CurveAdapter(),
   ];
 }
 
@@ -114,11 +116,25 @@ export class YieldAggregator {
     };
   }
 
+  /** Per-adapter timeout in milliseconds (90 seconds). Adapters exceeding this are skipped. */
+  private static readonly ADAPTER_TIMEOUT_MS = 90_000;
+
   private async runAdapter(adapter: ProtocolAdapter): Promise<AdapterResult> {
     const start = Date.now();
     try {
       logger.info(`[Aggregator] Running adapter: ${adapter.name}`);
-      const pools = await adapter.fetchPools();
+
+      // Wrap with a timeout to prevent any single adapter from blocking the whole refresh
+      const pools = await Promise.race([
+        adapter.fetchPools(),
+        new Promise<YieldPool[]>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`Adapter timeout after ${YieldAggregator.ADAPTER_TIMEOUT_MS / 1000}s`)),
+            YieldAggregator.ADAPTER_TIMEOUT_MS
+          )
+        ),
+      ]);
+
       const durationMs = Date.now() - start;
       logger.info(
         `[Aggregator] ${adapter.name}: ${pools.length} pools in ${durationMs}ms`

@@ -6,20 +6,25 @@
  */
 
 /**
- * Convert a per-second interest rate (27-decimal RAY format, used by Aave)
+ * Convert an annual interest rate (27-decimal RAY format, used by Aave V3)
  * to annualized APY percentage.
  *
- * Formula: APY = ((1 + rate / 1e27)^SECONDS_PER_YEAR - 1) * 100
+ * In Aave V3, `currentLiquidityRate` is the ANNUAL APR in RAY format (1e27 = 100%).
+ * We divide by SECONDS_PER_YEAR to get the per-second rate, then compound.
  *
- * @param rayRate - BigInt in 27-decimal RAY format
+ * Formula: APY = ((1 + annualRate/RAY/SECONDS_PER_YEAR)^SECONDS_PER_YEAR - 1) * 100
+ *
+ * @param rayRate - BigInt annual APR in 27-decimal RAY format
  */
 export function rayRateToApyPercent(rayRate: bigint): number {
   if (rayRate === 0n) return 0;
 
   const SECONDS_PER_YEAR = 31_536_000;
-  const rate = Number(rayRate) / 1e27;
+  // rayRate / 1e27 is the annual APR (e.g. 0.0178 = 1.78% APR)
+  const annualRate = Number(rayRate) / 1e27;
+  const ratePerSecond = annualRate / SECONDS_PER_YEAR;
 
-  return (Math.exp(SECONDS_PER_YEAR * Math.log1p(rate)) - 1) * 100;
+  return (Math.exp(SECONDS_PER_YEAR * Math.log1p(ratePerSecond)) - 1) * 100;
 }
 
 /**

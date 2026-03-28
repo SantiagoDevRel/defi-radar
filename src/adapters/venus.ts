@@ -27,6 +27,15 @@ import { logger } from '../utils/logger';
 // ABIs (minimal, only what we need)
 // ---------------------------------------------------------------------------
 
+const PANCAKE_FACTORY_ABI = [
+  'function getPair(address tokenA, address tokenB) external view returns (address pair)',
+] as const;
+
+const PANCAKE_PAIR_ABI = [
+  'function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)',
+  'function token0() external view returns (address)',
+] as const;
+
 const VTOKEN_ABI = [
   'function symbol() external view returns (string)',
   'function underlying() external view returns (address)',
@@ -81,10 +90,16 @@ const COMPTROLLER_ADDRESS = '0xfd36e2c2a6789db23113685031d7f16329158384';
 const BLOCKS_PER_YEAR = 10_512_000n;
 
 /**
- * XVS token address on BNB Chain — needed to price reward emissions.
- * Used to look up XVS/USD price from the oracle.
+ * PancakeSwap V2 Factory on BNB Chain.
+ * Used to look up the XVS/USDT pair for XVS price discovery.
  */
-const XVS_VTOKEN_ADDRESS = '0x151b1e2635a717bcdc836ecd6fbb62b674fe3e1d';
+const PANCAKE_FACTORY_ADDRESS = '0xca143ce32fe78f1f7019d7d551a6402fc5350c73';
+
+/** XVS token address on BNB Chain (underlying, not vToken) */
+const XVS_TOKEN_ADDRESS = '0xcf6bb5389c92bdda8a3747ddb454cb7a64626c63';
+
+/** Binance-Peg USDT on BNB Chain (18 decimals) */
+const USDT_BSC_ADDRESS = '0x55d398326f99059ff775485246999027b3197955';
 
 // ---------------------------------------------------------------------------
 // Adapter
@@ -120,8 +135,8 @@ export class VenusAdapter extends BaseEvmAdapter {
 
     logger.info(`[Venus] Found ${markets.length} markets`);
 
-    // 3. Get XVS price for reward APY calculations
-    const xvsPriceUsd = await this.getXvsPrice(oracle);
+    // 3. Get XVS price from PancakeSwap XVS/USDT pool for reward APY calculations
+    const xvsPriceUsd = await this.getXvsPriceFromPancakeSwap();
 
     // 4. Fetch data sequentially in batches to respect public RPC rate limits.
     //    The public BSC dataseed node throttles large bursts of concurrent eth_calls.
@@ -258,18 +273,48 @@ export class VenusAdapter extends BaseEvmAdapter {
   }
 
   /**
-   * Get XVS price in USD by reading from the Venus oracle.
-   * Falls back to 0 if the oracle call fails (reward APY will show 0).
+   * Get XVS price in USD by reading PancakeSwap V2 XVS/USDT pool reserves.
+   *
+   * XVS: 18 decimals  |  BSC-USDT: 18 decimals
+   * Price = USDT_reserve / XVS_reserve (no decimal adjustment needed)
    */
-  private async getXvsPrice(oracle: ethers.Contract): Promise<number> {
+  private async getXvsPriceFromPancakeSwap(): Promise<number> {
     try {
-      const priceMantissa: bigint = await this.withRetry(
-        () => oracle.getUnderlyingPrice(XVS_VTOKEN_ADDRESS),
-        'xvsPrice'
+      const factory = this.contract(PANCAKE_FACTORY_ADDRESS, PANCAKE_FACTORY_ABI);
+
+      const pairAddress: string = await this.withRetry(
+        () => factory.getPair(XVS_TOKEN_ADDRESS, USDT_BSC_ADDRESS),
+        'xvsUsdtPair'
       );
-      return Number(priceMantissa) / 1e18;
+
+      if (!pairAddress || pairAddress === ethers.ZeroAddress) {
+        logger.warn('[Venus] XVS/USDT pair not found on PancakeSwap');
+        return 0;
+      }
+
+      const pair = this.contract(pairAddress.toLowerCase(), PANCAKE_PAIR_ABI);
+
+      const [reserves, token0]: [readonly [bigint, bigint, number], string] =
+        await Promise.all([
+          pair.getReserves(),
+          pair.token0(),
+        ]);
+
+      const [reserve0, reserve1] = reserves;
+
+      // Determine orientation: which reserve is XVS?
+      const xvsIsToken0 = token0.toLowerCase() === XVS_TOKEN_ADDRESS.toLowerCase();
+      const xvsReserve  = xvsIsToken0 ? reserve0 : reserve1;
+      const usdtReserve = xvsIsToken0 ? reserve1 : reserve0;
+
+      if (xvsReserve === 0n) return 0;
+
+      // Both tokens are 18 decimals — division gives USD price directly
+      const price = Number(usdtReserve) / Number(xvsReserve);
+      logger.info(`[Venus] XVS price from PancakeSwap: $${price.toFixed(4)}`);
+      return price;
     } catch (err) {
-      logger.warn('[Venus] Could not fetch XVS price; reward APY will be 0', {
+      logger.warn('[Venus] Could not fetch XVS price from PancakeSwap; reward APY will be 0', {
         error: err instanceof Error ? err.message : String(err),
       });
       return 0;
